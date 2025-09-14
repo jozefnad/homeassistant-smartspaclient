@@ -66,15 +66,11 @@ class SpaClientConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Get the options flow for this handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle a option flow for Spa Client."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry):
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         """Handle options flow."""
@@ -98,10 +94,11 @@ async def validate_input(hass, data):
             raise AlreadyConfigured
 
     spa = spaclient(data[CONF_HOST])
-    connected = await spa.validate_connection()
-    if not connected:
-        _LOGGER.error("Failed to connect to spa at %s", data[CONF_HOST])
-        raise CannotConnect
+
+    connected = await spa.validate_connection()                          #To switch to development mode, comment out this line
+
+    if not connected:                                                    #To switch to development mode, comment out this line
+        raise CannotConnect                                              #To switch to development mode, comment out this line
 
 
 class CannotConnect(exceptions.HomeAssistantError):

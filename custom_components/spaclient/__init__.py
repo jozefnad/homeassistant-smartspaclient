@@ -62,19 +62,19 @@ async def async_setup_entry(hass, config_entry):
     spa = spaclient(config_entry.data[CONF_HOST])
     hass.data[DOMAIN][config_entry.entry_id] = {SPA: spa, DATA_LISTENER: [config_entry.add_update_listener(update_listener)]}
 
-    connected = await spa.validate_connection()
+    connected = await spa.validate_connection()     #To switch to development mode, comment out this line
 
-    if not connected:
-        raise ConfigEntryNotReady
+    if not connected:                               #To switch to development mode, comment out this line
+        raise ConfigEntryNotReady                   #To switch to development mode, comment out this line
 
-    await spa.send_additional_information_request()
-    await spa.send_configuration_request()
-    await spa.send_fault_log_request()
-    await spa.send_filter_cycles_request()
-    await spa.send_gfci_test_request()
-    await spa.send_information_request()
-    await spa.send_module_identification_request()
-    await spa.send_preferences_request()
+    await spa.send_additional_information_request() #To switch to development mode, comment out this line
+    await spa.send_configuration_request()          #To switch to development mode, comment out this line
+    await spa.send_fault_log_request()              #To switch to development mode, comment out this line
+    await spa.send_filter_cycles_request()          #To switch to development mode, comment out this line
+    await spa.send_gfci_test_request()              #To switch to development mode, comment out this line
+    await spa.send_information_request()            #To switch to development mode, comment out this line
+    await spa.send_module_identification_request()  #To switch to development mode, comment out this line
+    await spa.send_preferences_request()            #To switch to development mode, comment out this line
 
     await update_listener(hass, config_entry)
 

@@ -62,12 +62,12 @@ class spaclient:
         self.information_loaded = False
 
         """ Configuration variables """
-        self.cfg_pump_array = [0, 0, 0, 0, 0, 0]
-        self.cfg_light_array = [0, 0]
-        self.cfg_circ_pump_array = [0]
-        self.cfg_blower_array = [0]
-        self.cfg_mister_array = [0]
-        self.cfg_aux_array = [0, 0]
+        self.cfg_pump_array = [0, 0, 0, 0, 0, 0] #To switch to development mode, replace the 0 with 1
+        self.cfg_light_array = [0, 0]            #To switch to development mode, replace the 0 with 1
+        self.cfg_circ_pump_array = [0]           #To switch to development mode, replace the 0 with 1
+        self.cfg_blower_array = [0]              #To switch to development mode, replace the 0 with 1
+        self.cfg_mister_array = [0]              #To switch to development mode, replace the 0 with 1
+        self.cfg_aux_array = [0, 0]              #To switch to development mode, replace the 0 with 1
         self.configuration_loaded = False
 
         """ Module identification variables """
