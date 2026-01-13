@@ -1,5 +1,6 @@
 """Spa Client integration."""
 import asyncio
+import concurrent.futures
 import homeassistant.util.dt as dt_util
 import socket
 
@@ -9,6 +10,12 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.util.unit_conversion import TemperatureConverter
 from threading import Lock
 
+# Constants for timeouts and retries
+SOCKET_TIMEOUT = 5
+REQUEST_TIMEOUT = 30  # Maximum time to wait for a response
+MAX_RETRIES = 3
+RECONNECT_DELAY = 5
+
 
 class spaclient:
     def __init__(self, host_ip):
@@ -17,6 +24,11 @@ class spaclient:
         self.socket_l = Lock()
         self.socket_s = None
         self.socket_host_ip = host_ip
+        
+        """ Task control variables """
+        self._stop_flag = False
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="spa_socket")
+        self._loop = None
 
         """ Status update variable """
         self.status_chunk_array = []
@@ -123,44 +135,94 @@ class spaclient:
         self.gfci_test_loaded = False
 
     async def get_socket(self):
-        if self.socket_s is None:
-            self.socket_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket_s.settimeout(5)
-
+        """Create and connect socket with proper error handling."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+            
+        if self.socket_s is not None:
+            return True
+            
         try:
-            self.socket_s.connect((self.socket_host_ip, 4257))
+            self.socket_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket_s.settimeout(SOCKET_TIMEOUT)
+            self.socket_s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            
+            # Run connect in executor to not block event loop
+            await self._loop.run_in_executor(
+                self._executor,
+                lambda: self.socket_s.connect((self.socket_host_ip, 4257))
+            )
+            _LOGGER.debug("Socket connected to %s:4257", self.socket_host_ip)
             return True
-        except (socket.timeout, socket.error) as e:
-            #_LOGGER.error("Socket connection error: %s", e) #Validation point
+        except (socket.timeout, socket.error, OSError) as e:
+            _LOGGER.warning("Socket connection error: %s", e)
             self.socket_is_connected = False
-            self.socket_s.close()
+            if self.socket_s:
+                try:
+                    self.socket_s.close()
+                except Exception:
+                    pass
             self.socket_s = None
-            return True
+            return False
 
     async def validate_connection(self):
+        """Validate connection with timeout protection."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+            
+        connected = await self.get_socket()
+        if not connected or self.socket_s is None:
+            return False
+
         count = 0
+        max_attempts = 50  # 5 seconds max (50 * 0.1s)
+        
+        while count < max_attempts and not self.socket_is_connected and not self._stop_flag:
+            try:
+                await self.read_msg_async()
+            except Exception as e:
+                _LOGGER.warning("Error reading message during validation: %s", e)
+            await asyncio.sleep(0.1)
+            count += 1
 
-        await self.get_socket()
-
-        if self.socket_s is not None:
-            while count < 20 or self.socket_is_connected == False:
-                self.read_msg()
-                await asyncio.sleep(.1)
-                count += 1
-
-            if self.socket_is_connected == False:
-                self.socket_s.close()
-                self.socket_s = None
+        if not self.socket_is_connected:
+            _LOGGER.warning("Connection validation failed after %d attempts", count)
+            await self._close_socket()
 
         return self.socket_is_connected
+    
+    async def _close_socket(self):
+        """Safely close the socket."""
+        if self.socket_s:
+            try:
+                self.socket_s.close()
+            except Exception:
+                pass
+            self.socket_s = None
+        self.socket_is_connected = False
 
     async def keep_alive_call(self):
-        while True:
-            if self.socket_s is None:
-                await self.get_socket()
-            else:
-                await self.send_fault_log_request()
+        """Keep-alive task with proper stop handling."""
+        _LOGGER.debug("Keep-alive task started")
+        while not self._stop_flag:
+            try:
+                if self.socket_s is None:
+                    _LOGGER.debug("Socket is None, attempting to reconnect")
+                    connected = await self.get_socket()
+                    if not connected:
+                        _LOGGER.warning("Reconnection failed, waiting before retry")
+                        await asyncio.sleep(RECONNECT_DELAY)
+                        continue
+                else:
+                    await self.send_fault_log_request()
+            except asyncio.CancelledError:
+                _LOGGER.debug("Keep-alive task cancelled")
+                break
+            except Exception as e:
+                _LOGGER.error("Error in keep_alive_call: %s", e)
+                await self._close_socket()
             await asyncio.sleep(30)
+        _LOGGER.debug("Keep-alive task stopped")
 
     def compute_checksum(self, length, payload):
         crc = 0xb5
@@ -178,23 +240,93 @@ class spaclient:
                 crc ^= 0x07
         return crc ^ 0x02
 
+    def _read_msg_sync(self):
+        """Synchronous message read - runs in executor thread."""
+        if self.socket_s is None:
+            return None
+            
+        try:
+            len_chunk = self.socket_s.recv(2)
+        except (socket.timeout, socket.error, OSError) as e:
+            _LOGGER.debug("Socket recv(2) error: %s", e)
+            return None
+
+        if len_chunk == b'~' or len_chunk == b'' or len(len_chunk) == 0:
+            return b''
+
+        if len(len_chunk) < 2:
+            return b''
+            
+        length = len_chunk[1]
+
+        if int(length) == 0:
+            return b''
+
+        try:
+            chunk = self.socket_s.recv(length)
+        except (socket.timeout, socket.error, OSError) as e:
+            _LOGGER.debug("Socket recv(length) error: %s", e)
+            return None
+
+        return chunk
+    
+    async def read_msg_async(self):
+        """Async wrapper for message reading - doesn't block event loop."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+            
+        if self.socket_s is None:
+            return False
+            
+        self.socket_l.acquire()
+        try:
+            chunk = await self._loop.run_in_executor(self._executor, self._read_msg_sync)
+        except Exception as e:
+            _LOGGER.debug("Error in read_msg_async executor: %s", e)
+            chunk = None
+        finally:
+            self.socket_l.release()
+        
+        if chunk is None:
+            # Connection error occurred
+            self.socket_is_connected = False
+            await self._close_socket()
+            return False
+            
+        if chunk == b'':
+            # Empty message, just continue
+            return True
+            
+        return self._process_chunk(chunk)
+    
     def read_msg(self):
+        """Legacy sync read_msg for backward compatibility - USE read_msg_async INSTEAD."""
+        if self.socket_s is None:
+            return False
+            
         self.socket_l.acquire()
 
         try:
             len_chunk = self.socket_s.recv(2)
-        except (socket.timeout, socket.error) as e:
-            #_LOGGER.error("self.socket_s.recv(2) error = %s", e) #Validation point
+        except (socket.timeout, socket.error, OSError) as e:
+            _LOGGER.debug("Socket recv(2) error: %s", e)
             self.socket_is_connected = False
             self.socket_l.release()
-            self.socket_s.close()
+            try:
+                self.socket_s.close()
+            except Exception:
+                pass
             self.socket_s = None
-            return True
+            return False
 
         if len_chunk == b'~' or len_chunk == b'' or len(len_chunk) == 0:
             self.socket_l.release()
             return True
 
+        if len(len_chunk) < 2:
+            self.socket_l.release()
+            return True
+            
         length = len_chunk[1]
 
         if int(length) == 0:
@@ -203,71 +335,129 @@ class spaclient:
 
         try:
             chunk = self.socket_s.recv(length)
-        except (socket.timeout, socket.error) as e:
-            #_LOGGER.error("self.socket_s.recv(length) error = %s", e) #Validation point
+        except (socket.timeout, socket.error, OSError) as e:
+            _LOGGER.debug("Socket recv(length) error: %s", e)
             self.socket_is_connected = False
             self.socket_l.release()
-            self.socket_s.close()
+            try:
+                self.socket_s.close()
+            except Exception:
+                pass
             self.socket_s = None
-            return True
+            return False
 
         self.socket_l.release()
+        return self._process_chunk(chunk)
+    
+    def _process_chunk(self, chunk):
 
+        """Process received chunk and parse response."""
+        if chunk is None or len(chunk) < 3:
+            return True
+            
         if chunk != self.status_chunk_array:
             if chunk[0:3] == b'\xff\xaf\x13' and ((self.information_loaded and self.additional_information_loaded and self.preferences_loaded and self.configuration_loaded and self.module_identification_loaded) or (self.socket_is_connected == False)):
                 #_LOGGER.info("Status update = %s", chunk[3:]) #Validation point
-                self.parse_status_update(chunk[3:])
-                self.status_chunk_array = chunk
-                self.socket_is_connected = True
+                try:
+                    self.parse_status_update(chunk[3:])
+                    self.status_chunk_array = chunk
+                    self.socket_is_connected = True
+                except Exception as e:
+                    _LOGGER.warning("Error parsing status update: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x23':
                 #_LOGGER.info("Filter cycles response = %s", chunk[3:]) #Validation point
-                self.parse_filter_cycles_response(chunk[3:])
+                try:
+                    self.parse_filter_cycles_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing filter cycles: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x24' and self.information_loaded != True:
                 #_LOGGER.info("Information response = %s", chunk[3:]) #Validation point
-                self.parse_information_response(chunk[3:])
+                try:
+                    self.parse_information_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing information: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x25' and self.additional_information_loaded != True:
                 #_LOGGER.info("Additional information response = %s", chunk[3:]) #Validation point
-                self.parse_additional_information_response(chunk[3:])
+                try:
+                    self.parse_additional_information_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing additional information: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x26' and self.preferences_loaded != True:
                 #_LOGGER.info("Preferences response = %s", chunk[3:]) #Validation point
-                self.parse_preferences_response(chunk[3:])
+                try:
+                    self.parse_preferences_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing preferences: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x28':
                 #_LOGGER.info("Fault log response = %s", chunk[3:]) #Validation point
-                self.parse_fault_log_response(chunk[3:])
+                try:
+                    self.parse_fault_log_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing fault log: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x2b':
                 #_LOGGER.info("GFCI test response = %s", chunk[3:]) #Validation point
-                self.parse_gfci_test_response(chunk[3:])
+                try:
+                    self.parse_gfci_test_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing GFCI test: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x2e' and self.configuration_loaded != True:
                 #_LOGGER.info("Configuration response = %s", chunk[3:]) #Validation point
-                self.parse_configuration_response(chunk[3:])
+                try:
+                    self.parse_configuration_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing configuration: %s", e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x94' and self.module_identification_loaded != True:
                 #_LOGGER.info("Module identification response = %s", chunk[3:]) #Validation point
-                self.parse_module_identification_response(chunk[3:])
+                try:
+                    self.parse_module_identification_response(chunk[3:])
+                except Exception as e:
+                    _LOGGER.warning("Error parsing module identification: %s", e)
                 return True
 
         return True
 
     async def read_all_msg(self):
-        while True:
-            if self.socket_s is not None:
-                self.read_msg()
-            await asyncio.sleep(.1)
+        """Main message reading loop with proper stop handling."""
+        _LOGGER.debug("Message reading task started")
+        while not self._stop_flag:
+            try:
+                if self.socket_s is not None:
+                    await self.read_msg_async()
+                else:
+                    # Socket disconnected, wait longer before checking again
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                _LOGGER.debug("Message reading task cancelled")
+                break
+            except Exception as e:
+                _LOGGER.error("Error in read_all_msg: %s", e)
+            await asyncio.sleep(0.1)
+        _LOGGER.debug("Message reading task stopped")
+    
+    async def stop(self):
+        """Stop all background tasks and close connections."""
+        _LOGGER.info("Stopping spa client")
+        self._stop_flag = True
+        await self._close_socket()
+        if self._executor:
+            self._executor.shutdown(wait=False)
+        _LOGGER.info("Spa client stopped")
 
 
     def parse_additional_information_response(self, byte_array):
@@ -808,19 +998,23 @@ class spaclient:
 
 
     async def send_additional_information_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x04' + b'\x00' + b'\x00')
-        while self.additional_information_loaded == False:
-            self.read_msg()
+        """Request additional information with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x04' + b'\x00' + b'\x00'):
+            return False
+        return await self._wait_for_response('additional_information_loaded', REQUEST_TIMEOUT)
 
     async def send_configuration_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x00' + b'\x00' + b'\x01')
-        while self.configuration_loaded == False:
-            self.read_msg()
+        """Request configuration with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x00' + b'\x00' + b'\x01'):
+            return False
+        return await self._wait_for_response('configuration_loaded', REQUEST_TIMEOUT)
 
     async def send_fault_log_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x20' + b'\x00' + b'\x00')
-        while self.fault_log_loaded == False:
-            self.read_msg()
+        """Request fault log with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x20' + b'\x00' + b'\x00'):
+            return False
+        # Fault log is requested repeatedly, so don't wait for it
+        return True
 
     def send_filter_cycles_config(self):
         self.send_message(b'\x0a\xbf\x23',
@@ -835,21 +1029,29 @@ class spaclient:
         )
 
     async def send_filter_cycles_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x01' + b'\x00' + b'\x00')
-        while self.filter_cycles_loaded == False:
-            self.read_msg()
+        """Request filter cycles with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x01' + b'\x00' + b'\x00'):
+            return False
+        return await self._wait_for_response('filter_cycles_loaded', REQUEST_TIMEOUT)
 
     async def send_gfci_test_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x80' + b'\x00' + b'\x00')
-        while self.gfci_test_loaded == False:
-            self.read_msg()
+        """Request GFCI test with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x80' + b'\x00' + b'\x00'):
+            return False
+        return await self._wait_for_response('gfci_test_loaded', REQUEST_TIMEOUT)
 
     async def send_information_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x02' + b'\x00' + b'\x00')
-        while self.information_loaded == False:
-            self.read_msg()
+        """Request information with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x02' + b'\x00' + b'\x00'):
+            return False
+        return await self._wait_for_response('information_loaded', REQUEST_TIMEOUT)
 
     def send_message(self, type, payload):
+        """Send a message to the spa (synchronous - for backward compatibility)."""
+        if self.socket_s is None:
+            _LOGGER.warning("Cannot send message, socket is None")
+            return False
+            
         length = 5 + len(payload)
         checksum = self.compute_checksum(length - 1, bytes([length]) + type + payload)
         prefix = b'\x7e'
@@ -859,23 +1061,58 @@ class spaclient:
             #_LOGGER.info("send_message : %s", message) #Validation point
             self.socket_s.send(message)
             return True
-        except (socket.timeout, socket.error) as e:
-            #_LOGGER.error("self.socket_s.send(message) error = %s", e) #Validation point
+        except (socket.timeout, socket.error, OSError) as e:
+            _LOGGER.warning("Socket send error: %s", e)
             self.socket_is_connected = False
-            self.socket_l.release()
-            self.socket_s.close()
+            try:
+                self.socket_s.close()
+            except Exception:
+                pass
             self.socket_s = None
-            return True
+            return False
+    
+    async def _send_message_async(self, type, payload):
+        """Send a message to the spa (async - preferred method)."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+            
+        if self.socket_s is None:
+            _LOGGER.warning("Cannot send message, socket is None")
+            return False
+            
+        try:
+            result = await self._loop.run_in_executor(
+                self._executor,
+                lambda: self.send_message(type, payload)
+            )
+            return result
+        except Exception as e:
+            _LOGGER.error("Error sending message async: %s", e)
+            return False
+    
+    async def _wait_for_response(self, flag_name, timeout):
+        """Wait for a response flag with timeout protection."""
+        start_time = asyncio.get_event_loop().time()
+        while not getattr(self, flag_name) and not self._stop_flag:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
+                _LOGGER.warning("Timeout waiting for %s after %.1f seconds", flag_name, elapsed)
+                return False
+            await self.read_msg_async()
+            await asyncio.sleep(0.1)
+        return getattr(self, flag_name)
 
     async def send_module_identification_request(self):
-        self.send_message(b'\x0a\xbf\x04', bytes([]))
-        while self.module_identification_loaded == False:
-            self.read_msg()
+        """Request module identification with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x04', bytes([])):
+            return False
+        return await self._wait_for_response('module_identification_loaded', REQUEST_TIMEOUT)
 
     async def send_preferences_request(self):
-        self.send_message(b'\x0a\xbf\x22', b'\x08' + b'\x00' + b'\x00')
-        while self.preferences_loaded == False:
-            self.read_msg()
+        """Request preferences with timeout protection."""
+        if not await self._send_message_async(b'\x0a\xbf\x22', b'\x08' + b'\x00' + b'\x00'):
+            return False
+        return await self._wait_for_response('preferences_loaded', REQUEST_TIMEOUT)
 
     def send_toggle_message(self, item):
         self.send_message(b'\x0a\xbf\x11', bytes([item]) + b'\x00')
