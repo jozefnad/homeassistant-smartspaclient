@@ -912,6 +912,9 @@ class spaclient:
 
     def get_hold_mode(self):
         return self.hold_mode
+    
+    def get_flip_screen(self):
+        return self.flip_screen
 
     def get_hold_mode_remain_time(self):
         hours = self.hold_mode_remain_time // 60
