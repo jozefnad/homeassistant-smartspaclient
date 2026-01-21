@@ -780,6 +780,8 @@ class spaclient:
         self.temp_scale = "Fahrenheit" if (byte_array[9] & 0x01 == 0) else "Celsius"
         self.time_scale = "12 Hr" if (byte_array[9] & 0x02 == 0) else "24 Hr"
         self.filter_mode = (byte_array[9] & 0x0c) >> 2
+        self.flip_screen = 1 if (byte_array[9] & 0x80) >> 7 == 1 else 0
+        self.notification = 1 if (byte_array[19] & 0x20) >> 5 == 1 else 0
         self.heating = (byte_array[10] & 0x30) >> 4
         self.temp_range = "Low" if (byte_array[10] & 0x04) >> 2 == 0 else "High"
         self.pump1 = ("Off", "Low", "High")[byte_array[11] & 0x03]
@@ -1185,6 +1187,12 @@ class spaclient:
             return
         self.send_toggle_message(0x3c)
         self.hold_mode = value
+
+    def set_flip_screen(self, value):
+        if self.flip_screen == value:
+            return
+        self.send_toggle_message(0x1b)
+        self.flip_screen = value
 
     def set_light(self, light_num, value):
         light_val = self.light1

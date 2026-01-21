@@ -35,6 +35,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities.append(HoldMode(spaclient, config_entry))
     entities.append(StandbyMode(spaclient, config_entry))
     entities.append(TempRange(spaclient, config_entry))
+    entities.append(FlipScreen(spaclient, config_entry))
+
 
     async_add_entities(entities, True)
 
@@ -375,6 +377,47 @@ class HoldMode(SpaClientDevice, SwitchEntity):
         """Return True if entity is available."""
         return self._spaclient.get_gateway_status()
 
+class FlipScreen(SpaClientDevice, SwitchEntity):
+    """Representation of a Flip Screen switch."""
+
+    def __init__(self, spaclient, config_entry):
+        """Initialise the switch."""
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Flip Screen')
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#flip_screen"
+
+    @property
+    def name(self):
+        """Return the name of the device."""
+        return 'Flip Screen'
+
+    @property
+    def icon(self):
+        """Return the icon of the device."""
+        return self._icon
+
+    @property
+    def is_on(self):
+        """Get whether the switch is in on state."""
+        return self._spaclient.get_flip_screen()
+
+    async def async_turn_on(self, **kwargs):
+        """Send the on command."""
+        self._spaclient.set_flip_screen(1)
+
+    async def async_turn_off(self, **kwargs):
+        """Send the off command."""
+        self._spaclient.set_flip_screen(0)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self._spaclient.get_gateway_status()
 
 class StandbyMode(SpaClientDevice, SwitchEntity):
     """Representation of a Standby Mode switch."""

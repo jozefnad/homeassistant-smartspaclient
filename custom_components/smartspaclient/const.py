@@ -60,4 +60,5 @@ ICONS = {
     "Spa Thermostat": "mdi:hot-tub",
     "Standby Mode": "mdi:ungroup",
     "Temperature Range": "mdi:thermometer-lines",
+    "Flip Screen": "mdi:screen-rotation",
 }
