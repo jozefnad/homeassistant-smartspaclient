@@ -13,8 +13,7 @@
 ## What you need
 
 - A Hot Tub Equipped with a Balboa BP System
-- bwa™ Wi-Fi Module (50350) or custom module which emulates the bwa™ Wi-Fi Module on TCP port 4257
-- Reference : http://www.balboawatergroup.com/bwa
+- smartspa module, bwa™ Wi-Fi Module (50350) or custom module which emulates the bwa™ Wi-Fi Module on TCP port 4257
 
 ## Installation
 
