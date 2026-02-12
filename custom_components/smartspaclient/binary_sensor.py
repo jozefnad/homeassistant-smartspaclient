@@ -3,7 +3,7 @@
 from . import SpaClientDevice
 from .const import _LOGGER, DOMAIN, ICONS, SPA
 from datetime import timedelta
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
 
 SCAN_INTERVAL = timedelta(seconds=1)
 
@@ -21,6 +21,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     for i in range(0, 2):
         entities.append(FilterCycle(i + 1, spaclient, config_entry))
+
+    entities.append(SpaPriming(spaclient, config_entry))
+    entities.append(SpaHeating(spaclient, config_entry))
+    entities.append(SpaNotification(spaclient, config_entry))
 
     async_add_entities(entities, True)
 
@@ -114,4 +118,107 @@ class FilterCycle(SpaClientDevice, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
+        return self._spaclient.get_gateway_status()
+
+
+class SpaPriming(SpaClientDevice, BinarySensorEntity):
+    """Representation of the priming state binary sensor."""
+
+    def __init__(self, spaclient, config_entry):
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Priming')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#priming"
+
+    @property
+    def name(self):
+        return 'Priming'
+
+    @property
+    def icon(self):
+        return self._icon
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_priming() == 1
+
+    @property
+    def available(self) -> bool:
+        return self._spaclient.get_gateway_status()
+
+
+class SpaHeating(SpaClientDevice, BinarySensorEntity):
+    """Representation of the heating binary sensor."""
+
+    def __init__(self, spaclient, config_entry):
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Heating State')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#heating"
+
+    @property
+    def name(self):
+        return 'Heating'
+
+    @property
+    def icon(self):
+        if self._spaclient.get_heating():
+            return "mdi:fire"
+        return "mdi:fire-off"
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_heating() > 0
+
+    @property
+    def extra_state_attributes(self):
+        attrs = {}
+        attrs["Heating State"] = self._spaclient.get_heating_state()
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        return self._spaclient.get_gateway_status()
+
+
+class SpaNotification(SpaClientDevice, BinarySensorEntity):
+    """Representation of the notification binary sensor."""
+
+    def __init__(self, spaclient, config_entry):
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Notification')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#notification"
+
+    @property
+    def name(self):
+        return 'Notification'
+
+    @property
+    def icon(self):
+        if self._spaclient.get_notification():
+            return "mdi:bell-alert"
+        return "mdi:bell-outline"
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_notification() == 1
+
+    @property
+    def extra_state_attributes(self):
+        attrs = {}
+        attrs["Reminder"] = self._spaclient.get_reminder_type_text()
+        return attrs
+
+    @property
+    def available(self) -> bool:
         return self._spaclient.get_gateway_status()

@@ -36,6 +36,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities.append(StandbyMode(spaclient, config_entry))
     entities.append(TempRange(spaclient, config_entry))
     entities.append(FlipScreen(spaclient, config_entry))
+    entities.append(Reminders(spaclient, config_entry))
+    entities.append(M8AI(spaclient, config_entry))
+    entities.append(PanelLock(spaclient, config_entry))
+    entities.append(SettingsLock(spaclient, config_entry))
 
 
     async_add_entities(entities, True)
@@ -509,4 +513,158 @@ class TempRange(SpaClientDevice, SwitchEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
+        return self._spaclient.get_gateway_status()
+
+
+class Reminders(SpaClientDevice, SwitchEntity):
+    """Representation of a Reminders switch."""
+
+    def __init__(self, spaclient, config_entry):
+        """Initialise the switch."""
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Reminders')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#reminders"
+
+    @property
+    def name(self):
+        return 'Reminders'
+
+    @property
+    def icon(self):
+        return self._icon
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_pref_reminder() == "On"
+
+    async def async_turn_on(self, **kwargs):
+        self._spaclient.set_reminders(True)
+
+    async def async_turn_off(self, **kwargs):
+        self._spaclient.set_reminders(False)
+
+    @property
+    def available(self) -> bool:
+        return self._spaclient.get_gateway_status()
+
+
+class M8AI(SpaClientDevice, SwitchEntity):
+    """Representation of the M8 Artificial Intelligence switch."""
+
+    def __init__(self, spaclient, config_entry):
+        """Initialise the switch."""
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('M8 AI')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#m8_ai"
+
+    @property
+    def name(self):
+        return 'M8 Artificial Intelligence'
+
+    @property
+    def icon(self):
+        return self._icon
+
+    @property
+    def extra_state_attributes(self):
+        attrs = {}
+        attrs["M8 Cycle Time"] = f"{self._spaclient.get_m8_cycle_time()} min"
+        return attrs
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_pref_m8_ai() == "On"
+
+    async def async_turn_on(self, **kwargs):
+        self._spaclient.set_m8_ai(True)
+
+    async def async_turn_off(self, **kwargs):
+        self._spaclient.set_m8_ai(False)
+
+    @property
+    def available(self) -> bool:
+        return self._spaclient.get_gateway_status()
+
+
+class PanelLock(SpaClientDevice, SwitchEntity):
+    """Representation of the Panel Lock switch."""
+
+    def __init__(self, spaclient, config_entry):
+        """Initialise the switch."""
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Panel Lock')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#panel_lock"
+
+    @property
+    def name(self):
+        return 'Panel Lock'
+
+    @property
+    def icon(self):
+        if self._spaclient.get_panel_locked():
+            return "mdi:lock"
+        return "mdi:lock-open"
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_panel_locked()
+
+    async def async_turn_on(self, **kwargs):
+        self._spaclient.set_panel_lock(True)
+
+    async def async_turn_off(self, **kwargs):
+        self._spaclient.set_panel_lock(False)
+
+    @property
+    def available(self) -> bool:
+        return self._spaclient.get_gateway_status()
+
+
+class SettingsLock(SpaClientDevice, SwitchEntity):
+    """Representation of the Settings Lock switch."""
+
+    def __init__(self, spaclient, config_entry):
+        """Initialise the switch."""
+        super().__init__(spaclient, config_entry)
+        self._spaclient = spaclient
+        self._icon = ICONS.get('Settings Lock')
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._spaclient.get_macaddr().replace(':', '')}#settings_lock"
+
+    @property
+    def name(self):
+        return 'Settings Lock'
+
+    @property
+    def icon(self):
+        if self._spaclient.get_settings_locked():
+            return "mdi:lock"
+        return "mdi:lock-open-outline"
+
+    @property
+    def is_on(self):
+        return self._spaclient.get_settings_locked()
+
+    async def async_turn_on(self, **kwargs):
+        self._spaclient.set_settings_lock(True)
+
+    async def async_turn_off(self, **kwargs):
+        self._spaclient.set_settings_lock(False)
+
+    @property
+    def available(self) -> bool:
         return self._spaclient.get_gateway_status()

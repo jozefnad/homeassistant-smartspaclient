@@ -3,7 +3,7 @@
 from . import SpaClientDevice
 from .const import _LOGGER, DOMAIN, ICONS, SPA
 from datetime import timedelta
-from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature, HVACMode
+from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature, HVACAction, HVACMode
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.util.unit_conversion import TemperatureConverter
 
@@ -50,10 +50,31 @@ class SpaThermostat(SpaClientDevice, ClimateEntity):
 
     @property
     def hvac_mode(self):
-        """Return current HVAC mode."""
-        if self._spaclient.get_heating():
-            return HVACMode.HEAT
-        return HVACMode.OFF
+        """Return current HVAC mode based on standby mode.
+        
+        Standby mode ON = heating disabled (OFF)
+        Standby mode OFF = heating enabled (HEAT)
+        """
+        if self._spaclient.get_standby_mode():
+            return HVACMode.OFF
+        return HVACMode.HEAT
+
+    @property
+    def hvac_action(self):
+        """Return the current HVAC action.
+        
+        heating == 0: Off
+        heating == 1: Heating
+        heating == 2: Heat Waiting (preparing for heat)
+        """
+        if self._spaclient.get_standby_mode():
+            return HVACAction.OFF
+        heating = self._spaclient.get_heating()
+        if heating == 1:
+            return HVACAction.HEATING
+        if heating == 2:
+            return HVACAction.IDLE  # Heat Waiting / preparing for heat
+        return HVACAction.IDLE
 
     @property
     def hvac_modes(self):
@@ -63,7 +84,7 @@ class SpaThermostat(SpaClientDevice, ClimateEntity):
     @property
     def supported_features(self):
         """Return the list of supported features."""
-        return ClimateEntityFeature.TARGET_TEMPERATURE
+        return ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF
 
     @property
     def current_temperature(self):
@@ -100,10 +121,27 @@ class SpaThermostat(SpaClientDevice, ClimateEntity):
         await self._spaclient.set_temperature(temperature)
 
     async def async_set_hvac_mode(self, hvac_mode):
-        """Set new target HVAC mode."""
-        if self._spaclient.get_heating():
-            return HVACMode.HEAT
-        return HVACMode.OFF
+        """Set new target HVAC mode via standby mode.
+        
+        OFF = enable standby mode (disables heating, pumps etc still work)
+        HEAT = disable standby mode (heating enabled)
+        """
+        if hvac_mode == HVACMode.HEAT:
+            if self._spaclient.get_standby_mode():
+                self._spaclient.set_standby_mode()  # Toggle off
+        elif hvac_mode == HVACMode.OFF:
+            if not self._spaclient.get_standby_mode():
+                self._spaclient.set_standby_mode()  # Toggle on
+
+    async def async_turn_on(self):
+        """Turn on the spa (disable standby mode)."""
+        if self._spaclient.get_standby_mode():
+            self._spaclient.set_standby_mode()
+
+    async def async_turn_off(self):
+        """Turn off the spa (enable standby mode)."""
+        if not self._spaclient.get_standby_mode():
+            self._spaclient.set_standby_mode()
 
     @property
     def min_temp(self):
@@ -133,6 +171,17 @@ class SpaThermostat(SpaClientDevice, ClimateEntity):
         if self.hass.config.units.temperature_unit == UnitOfTemperature.CELSIUS:
             return UnitOfTemperature.CELSIUS
         return UnitOfTemperature.FAHRENHEIT
+
+    @property
+    def extra_state_attributes(self):
+        """Return the state attributes."""
+        attrs = {}
+        attrs["Heat Mode"] = self._spaclient.get_heat_mode()
+        attrs["Heating State"] = self._spaclient.get_heating_state()
+        attrs["Standby Mode"] = "On" if self._spaclient.get_standby_mode() else "Off"
+        attrs["Temperature Range"] = self._spaclient.get_temp_range()
+        attrs["Temperature Scale"] = self._spaclient.get_temp_scale()
+        return attrs
 
     @property
     def available(self) -> bool:

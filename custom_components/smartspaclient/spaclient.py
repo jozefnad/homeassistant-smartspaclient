@@ -61,6 +61,19 @@ class spaclient:
         self.aux2 = "Off"
         self.set_temp = 0
         self.standby_mode = 0
+        self.spa_state = 0
+        self.reminder_type = 0
+        self.sensor_a_temp = None
+        self.sensor_b_temp = None
+        self.panel_locked = False
+        self.settings_locked = False
+        self.wifi_state = 0
+        self.notification = 0
+        self.notification_type = 0
+        self.cleanup_cycle_active = 0
+        self.sensor_ab_temps = False
+        self.m8_cycle_time = 0
+        self.flip_screen = 0
 
         """ Information variables """
         self.info_model_name = "Unknown"
@@ -782,7 +795,7 @@ class spaclient:
         self.filter_mode = (byte_array[9] & 0x0c) >> 2
         self.flip_screen = 1 if (byte_array[9] & 0x80) >> 7 == 1 else 0
         self.notification = 1 if (byte_array[19] & 0x20) >> 5 == 1 else 0
-        self.heating = (byte_array[10] & 0x30) >> 4
+        self.heating = (byte_array[10] & 0x30) >> 4 == 1
         self.temp_range = "Low" if (byte_array[10] & 0x04) >> 2 == 0 else "High"
         self.pump1 = ("Off", "Low", "High")[byte_array[11] & 0x03]
         self.pump2 = ("Off", "Low", "High")[byte_array[11] >> 2 & 0x03]
@@ -799,6 +812,27 @@ class spaclient:
         self.aux2 = byte_array[15] & 0x10
         self.set_temp = byte_array[20]
         self.standby_mode = 1 if (byte_array[22] & 0x01) == 1 else 0
+
+        # Additional status fields
+        self.spa_state = byte_array[0]
+        self.reminder_type = byte_array[6]
+        if not self.hold_mode:
+            self.sensor_a_temp = byte_array[7] if byte_array[7] != 255 else None
+        else:
+            self.sensor_a_temp = None
+        self.sensor_b_temp = byte_array[8] if byte_array[8] != 255 and byte_array[8] != 0 else None
+        self.panel_locked = (byte_array[9] & 0x20) >> 5 == 1
+        if len(byte_array) > 16:
+            self.wifi_state = byte_array[16]
+        if len(byte_array) > 18:
+            self.notification_type = byte_array[18]
+        if len(byte_array) > 19:
+            self.cleanup_cycle_active = (byte_array[19] & 0x0c) >> 2
+        if len(byte_array) > 21:
+            self.sensor_ab_temps = (byte_array[21] & 0x02) >> 1 == 1
+            self.settings_locked = (byte_array[21] & 0x08) >> 3 == 1
+        if len(byte_array) > 24:
+            self.m8_cycle_time = byte_array[24]
 
 
     def get_aux(self, aux_num):
@@ -1000,6 +1034,95 @@ class spaclient:
 
     def get_temp_range(self):
         return self.temp_range
+
+    def get_spa_state(self):
+        """Return spa state as text."""
+        states = {0x00: "Running", 0x01: "Initializing", 0x05: "Hold Mode", 0x14: "A/B Temps ON", 0x17: "Test Mode"}
+        return states.get(self.spa_state, "Unknown")
+
+    def get_heating_state(self):
+        """Return heating state as text: Off, Heating, or Heat Waiting."""
+        states = {0: "Off", 1: "Heating", 2: "Heat Waiting"}
+        return states.get(self.heating, "Unknown")
+
+    def get_reminder_type_text(self):
+        """Return reminder type as text."""
+        types = {0x00: "None", 0x04: "Clean filter", 0x0A: "Check the pH", 0x09: "Check the sanitizer", 0x1E: "Fault"}
+        return types.get(self.reminder_type, "Unknown")
+
+    def get_sensor_a_temp(self):
+        return self.sensor_a_temp
+
+    def get_sensor_b_temp(self):
+        return self.sensor_b_temp
+
+    def get_panel_locked(self):
+        return self.panel_locked
+
+    def get_settings_locked(self):
+        return self.settings_locked
+
+    def get_wifi_state(self):
+        return self.wifi_state
+
+    def get_wifi_state_text(self):
+        """Return WiFi state as text."""
+        types = {0: "OK", 0x10: "Spa Not Communicating", 0x20: "Startup", 0x30: "Prime", 0x40: "Hold", 0x50: "Panel"}
+        return types.get(self.wifi_state, "Unknown")
+
+    def get_priming(self):
+        return self.priming
+
+    def get_notification(self):
+        return self.notification
+
+    def get_notification_type(self):
+        return self.notification_type
+
+    def get_m8_cycle_time(self):
+        return self.m8_cycle_time
+
+    def get_temp_scale(self):
+        return self.temp_scale
+
+    def get_time_scale(self):
+        return self.time_scale
+
+    def get_pref_reminder(self):
+        return self.pref_reminder
+
+    def get_pref_temp_scale(self):
+        return self.pref_temp_scale
+
+    def get_pref_clock_mode(self):
+        return self.pref_clock_mode
+
+    def get_pref_clean_up_cycle(self):
+        return self.pref_clean_up_cycle
+
+    def get_pref_m8_ai(self):
+        return self.pref_m8_ai
+
+    def get_info_sw_vers(self):
+        return self.info_sw_vers
+
+    def get_info_heater_voltage(self):
+        return self.info_heater_voltage
+
+    def get_info_heater_type(self):
+        return self.info_heater_type
+
+    def get_info_dip_switch(self):
+        return self.info_dip_switch
+
+    def get_info_cfg_sig(self):
+        return self.info_cfg_sig
+
+    def get_gfci_test_result(self):
+        return "Pass" if self.gfci_test_result == 1 else "Fail"
+
+    def get_sensor_ab_temps(self):
+        return self.sensor_ab_temps
 
 
     async def send_additional_information_request(self):
@@ -1269,8 +1392,55 @@ class spaclient:
     async def set_temperature(self, temp):
         self.send_message(b'\x0a\xbf\x20', bytes([int(temp)]))
 
-    def set_temperature_scale(self, temperature_scale): #Not use yet!
-        self.send_message(b'\x0a\xbf\x27', bytes([]) + bytes([]))
+    def set_temperature_scale(self, temperature_scale):
+        """Set temperature scale preference. 'Fahrenheit' or 'Celsius'."""
+        val = 1 if temperature_scale == "Celsius" else 0
+        self.send_message(b'\x0a\xbf\x27', bytes([0x01, val]))
+        self.pref_temp_scale = temperature_scale
+
+    def set_clock_mode(self, clock_mode):
+        """Set clock mode preference. '12 Hr' or '24 Hr'."""
+        val = 1 if clock_mode == "24 Hr" else 0
+        self.send_message(b'\x0a\xbf\x27', bytes([0x02, val]))
+        self.pref_clock_mode = clock_mode
+
+    def set_reminders(self, value):
+        """Set reminders. True=On, False=Off."""
+        val = 1 if value else 0
+        self.send_message(b'\x0a\xbf\x27', bytes([0x00, val]))
+        self.pref_reminder = "On" if value else "Off"
+
+    def set_m8_ai(self, value):
+        """Set M8 Artificial Intelligence. True=On, False=Off."""
+        val = 1 if value else 0
+        self.send_message(b'\x0a\xbf\x27', bytes([0x06, val]))
+        self.pref_m8_ai = "On" if value else "Off"
+
+    def set_cleanup_cycle(self, value):
+        """Set cleanup cycle duration. value in 30-min units (0=OFF, 1=30min, etc.)."""
+        self.send_message(b'\x0a\xbf\x27', bytes([0x03, int(value)]))
+        self.pref_clean_up_cycle = int(value)
+
+    def set_panel_lock(self, lock):
+        """Lock or unlock panel. lock=True to lock, False to unlock."""
+        if lock:
+            self.send_message(b'\x0a\xbf\x2d', bytes([0x02]))
+        else:
+            self.send_message(b'\x0a\xbf\x2d', bytes([0x04]))
+        self.panel_locked = lock
+
+    def set_settings_lock(self, lock):
+        """Lock or unlock settings. lock=True to lock, False to unlock."""
+        if lock:
+            self.send_message(b'\x0a\xbf\x2d', bytes([0x01]))
+        else:
+            self.send_message(b'\x0a\xbf\x2d', bytes([0x03]))
+        self.settings_locked = lock
+
+    async def reload_preferences(self):
+        """Reload preferences from spa after changing a preference."""
+        self.preferences_loaded = False
+        await self.send_preferences_request()
 
 
     def print_variables(self):
@@ -1314,6 +1484,20 @@ class spaclient:
         _LOGGER.info("self.aux2 = %s", self.aux2)
         _LOGGER.info("self.set_temp = %s", self.set_temp)
         _LOGGER.info("self.standby_mode = %s", self.standby_mode)
+        _LOGGER.info("self.spa_state = %s (%s)", self.spa_state, self.get_spa_state())
+        _LOGGER.info("self.reminder_type = %s (%s)", self.reminder_type, self.get_reminder_type_text())
+        _LOGGER.info("self.sensor_a_temp = %s", self.sensor_a_temp)
+        _LOGGER.info("self.sensor_b_temp = %s", self.sensor_b_temp)
+        _LOGGER.info("self.panel_locked = %s", self.panel_locked)
+        _LOGGER.info("self.settings_locked = %s", self.settings_locked)
+        _LOGGER.info("self.wifi_state = %s (%s)", self.wifi_state, self.get_wifi_state_text())
+        _LOGGER.info("self.notification = %s", self.notification)
+        _LOGGER.info("self.notification_type = %s", self.notification_type)
+        _LOGGER.info("self.cleanup_cycle_active = %s", self.cleanup_cycle_active)
+        _LOGGER.info("self.sensor_ab_temps = %s", self.sensor_ab_temps)
+        _LOGGER.info("self.m8_cycle_time = %s", self.m8_cycle_time)
+        _LOGGER.info("self.flip_screen = %s", self.flip_screen)
+        _LOGGER.info("self.heating_state = %s", self.get_heating_state())
 
         _LOGGER.info("")
         _LOGGER.info("===========================")

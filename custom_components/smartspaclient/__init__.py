@@ -86,8 +86,9 @@ async def async_setup_entry(hass, config_entry):
         await spa.send_filter_cycles_request()          #To switch to development mode, comment out this line
         await spa.send_gfci_test_request()              #To switch to development mode, comment out this line
         await spa.send_information_request()            #To switch to development mode, comment out this line
-        await spa.send_module_identification_request()  #To switch to development mode, comment out this line
         await spa.send_preferences_request()            #To switch to development mode, comment out this line
+        await spa.send_module_identification_request()  #To switch to development mode, comment out this line
+        
     except Exception as e:
         _LOGGER.error("Error during spa initialization: %s", e)
         await spa.stop()
