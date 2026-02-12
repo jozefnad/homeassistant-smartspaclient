@@ -10,6 +10,11 @@
 
 **SmartSpa Client** for HomeAssistant is inspired by several similar projects and the work of many people.
 
+If you find this integration useful, you can buy me a beer to help keep development going.
+
+[![Buy me a beer](https://img.shields.io/badge/Donate-Buy%20me%20a%20beer-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://www.buymeacoffee.com/jozefnad)
+
+
 ## What you need
 
 - A Hot Tub Equipped with a Balboa BP System
