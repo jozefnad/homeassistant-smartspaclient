@@ -1,4 +1,5 @@
 {
     "name": "SmartSpa Client",
+    "type": "integration",
     "render_readme": true
 }
