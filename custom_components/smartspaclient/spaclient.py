@@ -11,7 +11,8 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from threading import Lock
 
 # Constants for timeouts and retries
-SOCKET_TIMEOUT = 5
+# 15s timeout: Balboa sends status every ~1s, so 15s only triggers on real outages
+SOCKET_TIMEOUT = 15
 REQUEST_TIMEOUT = 30  # Maximum time to wait for a response
 MAX_RETRIES = 3
 RECONNECT_DELAY = 5
@@ -214,16 +215,27 @@ class spaclient:
             self.socket_s = None
         self.socket_is_connected = False
 
+    async def _reconnect_and_reinit(self):
+        """Reconnect socket and send a keep-alive ping to resume spa comms."""
+        connected = await self.get_socket()
+        if connected:
+            _LOGGER.info("Reconnected to spa at %s", self.socket_host_ip)
+            # Sending fault log request acts as a keep-alive ping;
+            # the spa will resume sending status updates on its own.
+            await self.send_fault_log_request()
+        return connected
+
     async def keep_alive_call(self):
         """Keep-alive task with proper stop handling."""
         _LOGGER.debug("Keep-alive task started")
         while not self._stop_flag:
             try:
                 if self.socket_s is None:
-                    _LOGGER.debug("Socket is None, attempting to reconnect")
-                    connected = await self.get_socket()
+                    # read_all_msg handles fast reconnect; this is a backup
+                    _LOGGER.debug("Keep-alive: socket is None, backup reconnect attempt")
+                    connected = await self._reconnect_and_reinit()
                     if not connected:
-                        _LOGGER.warning("Reconnection failed, waiting before retry")
+                        _LOGGER.warning("Keep-alive: reconnection failed, will retry")
                         await asyncio.sleep(RECONNECT_DELAY)
                         continue
                 else:
@@ -448,19 +460,35 @@ class spaclient:
     async def read_all_msg(self):
         """Main message reading loop with proper stop handling."""
         _LOGGER.debug("Message reading task started")
+        _next_reconnect_at = None
         while not self._stop_flag:
             try:
                 if self.socket_s is not None:
+                    _next_reconnect_at = None  # reset on a good socket
                     await self.read_msg_async()
+                    await asyncio.sleep(0.1)
                 else:
-                    # Socket disconnected, wait longer before checking again
+                    # Socket is gone — try to reconnect quickly instead of
+                    # waiting up to 30s for keep_alive_call to wake up.
+                    now = asyncio.get_event_loop().time()
+                    if _next_reconnect_at is None:
+                        _next_reconnect_at = now + RECONNECT_DELAY
+                        _LOGGER.warning("Socket lost, will attempt reconnect in %ds", RECONNECT_DELAY)
+                    elif now >= _next_reconnect_at:
+                        _LOGGER.info("read_all_msg: attempting reconnect")
+                        connected = await self._reconnect_and_reinit()
+                        if connected:
+                            _next_reconnect_at = None
+                        else:
+                            # Back-off: try again after another RECONNECT_DELAY
+                            _next_reconnect_at = asyncio.get_event_loop().time() + RECONNECT_DELAY
                     await asyncio.sleep(1)
             except asyncio.CancelledError:
                 _LOGGER.debug("Message reading task cancelled")
                 break
             except Exception as e:
                 _LOGGER.error("Error in read_all_msg: %s", e)
-            await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1)
         _LOGGER.debug("Message reading task stopped")
     
     async def stop(self):
