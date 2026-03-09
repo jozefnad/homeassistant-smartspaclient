@@ -248,7 +248,3 @@ Time sync with Home Assistant | ✓
 - [x] Fixed heating state representation and climate thermostat logic
 - [x] Fixed temperature scale command structure
 - [x] Async socket lifecycle management with proper cleanup
-
-
-
-
