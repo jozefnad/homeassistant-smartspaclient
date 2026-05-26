@@ -20,6 +20,7 @@ class SpaErrorBinarySensor(BinarySensorEntity):
 
     async def async_update(self) -> None:
         """Update the binary sensor state from the coordinator."""
-        state = await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_refresh()
+        state = self.coordinator.data
         if state and "ERROR" in state:
             self._attr_is_on = state["ERROR"] == STATE_ON

@@ -25,10 +25,11 @@ class BalboaCoordinator(DataUpdateCoordinator):
         )
         self.client = client
 
-    async def async_update(self) -> dict[str, Any]:
+    async def _async_update_data(self) -> dict[str, Any]:
         """Fetch the latest state from the spa."""
         try:
             state = await self.hass.async_add_executor_job(self.client.get_state)
+            _LOGGER.debug("Fetched Balboa spa state: %s", state)
             return state
         except Exception as e:
             _LOGGER.error("Error updating Balboa spa state: %s", e)

@@ -20,7 +20,8 @@ class SpaLight(LightEntity):
 
     async def async_update(self) -> None:
         """Update the light state from the coordinator."""
-        state = await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_refresh()
+        state = self.coordinator.data
         if state and "LIGHT" in state:
             self._attr_is_on = state["LIGHT"] != STATE_OFF
             if "LIGHT_LEVEL" in state:

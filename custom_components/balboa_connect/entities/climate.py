@@ -32,7 +32,8 @@ class SpaClimate(ClimateEntity):
 
     async def async_update(self) -> None:
         """Update the climate state from the coordinator."""
-        state = await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_refresh()
+        state = self.coordinator.data
         if state:
             if "TEMP" in state:
                 self._attr_current_temperature = float(state["TEMP"])

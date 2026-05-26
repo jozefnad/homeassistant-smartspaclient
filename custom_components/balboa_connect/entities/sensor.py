@@ -21,6 +21,7 @@ class SpaTemperatureSensor(SensorEntity):
 
     async def async_update(self) -> None:
         """Update the sensor state from the coordinator."""
-        state = await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_refresh()
+        state = self.coordinator.data
         if state and "TEMP" in state:
             self._attr_native_value = float(state["TEMP"])
