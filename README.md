@@ -3,53 +3,58 @@
 [![GitHub Release][releases-shield]][releases]
 [![GitHub Activity][commits-shield]][commits]
 [![License][license-shield]](LICENSE)
+[![hacs][hacs-shield]][hacs]
 
-**Une intégration Home Assistant pour les spas Balboa avec module Wi-Fi BW50350.**
+**Intégration Home Assistant pour les spas Balboa avec module Wi-Fi BW50350.**
 
-## 📌 À propos
+## ✨ Fonctionnalités
+- ✅ Contrôle de la température et des modes (chauffage, filtration).
+- ✅ Gestion des pompes, jets, lumières.
+- ✅ Polling optimisé (30 secondes) pour éviter les déconnexions.
+- ✅ Connexion TCP persistante et respect du protocole Balboa.
+- ✅ Compatible avec **BP6013G3** et **SpaTouch2**.
 
-Cette intégration permet de contrôler votre spa Balboa via Home Assistant **sans déconnexions intempestives**. Elle respecte strictement le protocole Balboa pour éviter de surcharger le module Wi-Fi.
+## 📥 Installation via HACS
+1. **Ajoutez ce dépôt comme repository personnalisé** :
+   - Allez dans **HACS > Paramètres > Dépôts personnalisés**.
+   - Ajoutez l'URL du dépôt : `https://github.com/votre-utilisateur/balboa_connect`.
+   - Sélectionnez **Catégorie : Intégration**.
+   - Cliquez sur **Ajouter**.
 
-✅ **Fonctionnalités :**
-- Contrôle de la température.
-- Gestion des modes (chauffage, filtration, etc.).
-- Polling optimisé pour éviter les déconnexions.
-- Connexion TCP persistante.
+2. **Installez l'intégration** :
+   - Allez dans **HACS > Intégrations**.
+   - Recherchez **Balboa Connect** et cliquez sur **Installer**.
+   - Redémarrez Home Assistant.
 
-⚠️ **Prérequis :**
-- Un spa Balboa avec **module Wi-Fi BW50350** (firmware à jour).
-- Carte mère compatible (ex : BP6013G3).
-- Écran SpaTouch2 ou similaire.
-
-## 🛠 Installation
-
-### Via HACS (recommandé)
-1. Ajoutez ce dépôt comme [repository personnalisé dans HACS](https://hacs.xyz/docs/faq/custom_repositories/).
-2. Redémarrez Home Assistant.
-3. Ajoutez l'intégration via **Paramètres > Appareils et services > Ajouter une intégration > Balboa Connect**.
-
-### Manuellement
-1. Copiez le dossier `balboa_connect` dans le dossier `custom_components/` de votre installation Home Assistant.
-2. Redémarrez Home Assistant.
-3. Ajoutez l'intégration via **Paramètres > Appareils et services**.
+3. **Configurez l'intégration** :
+   - Allez dans **Paramètres > Appareils et services > Ajouter une intégration**.
+   - Sélectionnez **Balboa Connect**.
+   - Entrez l'**adresse IP** de votre module BW50350 (ex: `192.168.1.100`), le **port** (`4257`), et un **nom** (ex: "Mon Spa").
 
 ## ⚙ Configuration
+   Paramètre       | Description                          | Valeur par défaut |
+ |-----------------|--------------------------------------|-------------------|
+ | **Adresse IP**  | Adresse locale du module BW50350.    | -                 |
+ | **Port**        | Port du module.                      | 4257              |
+ | **Nom**         | Nom personnalisé pour votre spa.     | Balboa Spa        |
 
-1. **Adresse IP** : L'adresse IP locale de votre module BW50350.
-2. **Port** : Par défaut `4257`.
-3. **Nom** : Nom personnalisé pour votre spa (optionnel).
+## 📊 Entités disponibles
+ | Type          | Description                          | Exemple d'utilisation          |
+ |---------------|--------------------------------------|----------------------------------|
+ | **Climate**   | Contrôle de la température et modes. | `climate.mon_spa_climate`        |
+ | **Switch**    | Pompes, jets, etc.                   | `switch.mon_spa_pump1`           |
+ | **Light**     | Lumière du spa.                      | `light.mon_spa_light`            |
+ | **Sensor**    | Température actuelle.                | `sensor.mon_spa_temperature`     |
+ | **Binary Sensor** | Alertes (erreur, filtre sale).   | `binary_sensor.mon_spa_error`    |
 
-## 🐛 Résolution des problèmes
-
+## 🐛 Dépannage
 ### Déconnexions fréquentes
-- Vérifiez que votre **firmware BW50350 est à jour** (version ≥ 2.0.0).
-- Assurez-vous qu'aucune autre application (ex : Balboa WorldWide App) n'est connectée simultanément.
-- Réduisez la fréquence de polling dans les paramètres de l'intégration.
-
-### Logs
-Activez les logs en ajoutant ceci à votre `configuration.yaml` :
-```yaml
-logger:
-  default: info
-  logs:
-    custom_components.balboa_connect: debug
+- **Vérifiez le firmware** : Contactez le support Balboa avec votre numéro de série pour confirmer que le firmware est à jour (version ≥ 2.0.0).
+- **Désactivez les autres applications** : Aucune autre application (ex: Balboa WorldWide App) ne doit être connectée simultanément.
+- **Activez les logs** :
+  ```yaml
+  # configuration.yaml
+  logger:
+    default: info
+    logs:
+      custom_components.balboa_connect: debug
