@@ -1,0 +1,13 @@
+{
+  "domain": "balboa_connect",
+  "name": "Balboa Connect",
+  "documentation": "https://github.com/jpandre470-lab/balboa_connect",
+  "issue_tracker": "https://github.com/jpandre470-lab/balboa_connect/issues",
+  "dependencies": [],
+  "codeowners": ["@jpandre470-lab"],
+  "version": "0.1.0",
+  "homeassistant_api": true,
+  "requirements": [],
+  "iot_class": "local_polling",
+  "config_flow": true
+}

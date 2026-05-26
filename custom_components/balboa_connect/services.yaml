@@ -1,0 +1,12 @@
+# Services personnalisés pour Balboa Connect
+reset_spa:
+  name: Réinitialiser le spa
+  description: Réinitialise la connexion au module Balboa.
+  fields:
+    entity_id:
+      name: Entité
+      description: L'entité du spa à réinitialiser.
+      required: true
+      selector:
+        entity:
+          integration: balboa_connect
