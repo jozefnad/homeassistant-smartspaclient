@@ -1,0 +1,29 @@
+{
+    "config": {
+        "abort": {
+            "already_configured": "This bwa Wi-Fi Module is already configured"
+        },
+        "error": {
+            "cannot_connect": "Unable to connect to this bwa Wi-Fi Module, please try again",
+            "unknown": "Unexpected error"
+        },
+        "step": {
+            "user": {
+                "data": {
+                    "host": "Host name or IP address",
+                    "name": "Name"
+                }
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "data": {
+                    "scan_interval": "Entities polling rate (seconds)",
+                    "sync_time": "Keep your Balboa BP controller's time synchronized with Home Assistant"
+                }
+            }
+        }
+    }
+}
