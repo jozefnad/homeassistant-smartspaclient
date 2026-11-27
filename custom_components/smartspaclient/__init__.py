@@ -88,7 +88,11 @@ async def async_setup_entry(hass, config_entry):
         await spa.send_information_request()            #To switch to development mode, comment out this line
         await spa.send_preferences_request()            #To switch to development mode, comment out this line
         await spa.send_module_identification_request()  #To switch to development mode, comment out this line
-        
+        if not spa.module_identification_loaded:        #To switch to development mode, comment out this line
+            # The MAC address from this reply is the base of all unique_ids - retry once
+            _LOGGER.warning("No module identification reply from %s, retrying", config_entry.data[CONF_HOST])
+            await spa.send_module_identification_request()
+
     except Exception as e:
         _LOGGER.error("Error during spa initialization: %s", e)
         await spa.stop()

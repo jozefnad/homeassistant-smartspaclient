@@ -221,16 +221,15 @@ class SpaPump(SpaClientDevice, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Send the on command."""
+        if self._spaclient.get_pump(self._pump_num) != "Off":
+            return
         if self._spaclient.cfg_pump_array[self._pump_num - 1] == 1:
             return self._spaclient.set_pump(self._pump_num, "High")
 
         self._spaclient.set_pump(self._pump_num, "Low")
 
     async def async_turn_off(self, **kwargs):
-        """Send the off command."""
-        if self._spaclient.get_pump(self._pump_num) == "Low":
-            return self._spaclient.set_pump(self._pump_num, "High")
-
+        """Send the off command (set_pump sends as many toggles as needed)."""
         self._spaclient.set_pump(self._pump_num, "Off")
 
     @property
@@ -453,12 +452,14 @@ class StandbyMode(SpaClientDevice, SwitchEntity):
         return self._spaclient.get_standby_mode()
 
     async def async_turn_on(self, **kwargs):
-        """Send the on command."""
-        self._spaclient.set_standby_mode()
+        """Send the on command (standby is a toggle - only send when needed)."""
+        if not self._spaclient.get_standby_mode():
+            self._spaclient.set_standby_mode()
 
     async def async_turn_off(self, **kwargs):
-        """Send the off command."""
-        self._spaclient.set_standby_mode()
+        """Send the off command (standby is a toggle - only send when needed)."""
+        if self._spaclient.get_standby_mode():
+            self._spaclient.set_standby_mode()
 
     @property
     def available(self) -> bool:

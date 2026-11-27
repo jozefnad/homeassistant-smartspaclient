@@ -8,7 +8,6 @@ import socket
 from .const import _LOGGER
 from homeassistant.const import UnitOfTemperature
 from homeassistant.util.unit_conversion import TemperatureConverter
-from threading import Lock
 
 # Constants for timeouts and retries
 # 15s timeout: Balboa sends status every ~1s, so 15s only triggers on real outages
@@ -17,18 +16,26 @@ REQUEST_TIMEOUT = 30  # Maximum time to wait for a response
 MAX_RETRIES = 3
 RECONNECT_DELAY = 5
 
+FRAME_MARKER = 0x7E
+MIN_FRAME_LEN = 5     # LEN byte minimum: LEN, CH, DEST, TYPE, CRC
+RECV_SIZE = 512
+MAX_RX_BUFFER = 4096  # Safety limit for the reassembly buffer
+
 
 class spaclient:
     def __init__(self, host_ip):
         """ Socket variables """
         self.socket_is_connected = False
-        self.socket_l = Lock()
+        self.socket_l = asyncio.Lock()
         self.socket_s = None
         self.socket_host_ip = host_ip
-        
+        self._rx_buffer = bytearray()
+        self._rx_frames = []
+
         """ Task control variables """
         self._stop_flag = False
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="spa_socket")
+        # Two workers: a blocking recv() must not delay a send()/connect()
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="spa_socket")
         self._loop = None
 
         """ Status update variable """
@@ -45,7 +52,7 @@ class spaclient:
         self.temp_scale = "Fahrenheit"
         self.filter_mode = False
         self.time_scale = "24 Hr"
-        self.heating = False
+        self.heating = 0
         self.temp_range = "Low"
         self.pump1 = "Off"
         self.pump2 = "Off"
@@ -60,6 +67,8 @@ class spaclient:
         self.mister = "Off"
         self.aux1 = "Off"
         self.aux2 = "Off"
+        self.clear_notification = 0
+        self.normal_operation = 0
         self.set_temp = 0
         self.standby_mode = 0
         self.spa_state = 0
@@ -151,29 +160,35 @@ class spaclient:
     async def get_socket(self):
         """Create and connect socket with proper error handling."""
         if self._loop is None:
-            self._loop = asyncio.get_event_loop()
-            
+            self._loop = asyncio.get_running_loop()
+
         if self.socket_s is not None:
             return True
-            
+
+        sock = None
         try:
-            self.socket_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket_s.settimeout(SOCKET_TIMEOUT)
-            self.socket_s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(SOCKET_TIMEOUT)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
             # Run connect in executor to not block event loop
             await self._loop.run_in_executor(
                 self._executor,
-                lambda: self.socket_s.connect((self.socket_host_ip, 4257))
+                lambda: sock.connect((self.socket_host_ip, 4257))
             )
+            # Fresh connection - drop any half-received data of the old one
+            self._rx_buffer = bytearray()
+            self._rx_frames = []
+            self.socket_s = sock
             _LOGGER.debug("Socket connected to %s:4257", self.socket_host_ip)
             return True
         except (socket.timeout, socket.error, OSError) as e:
             _LOGGER.warning("Socket connection error: %s", e)
             self.socket_is_connected = False
-            if self.socket_s:
+            if sock:
                 try:
-                    self.socket_s.close()
+                    sock.close()
                 except Exception:
                     pass
             self.socket_s = None
@@ -182,8 +197,8 @@ class spaclient:
     async def validate_connection(self):
         """Validate connection with timeout protection."""
         if self._loop is None:
-            self._loop = asyncio.get_event_loop()
-            
+            self._loop = asyncio.get_running_loop()
+
         connected = await self.get_socket()
         if not connected or self.socket_s is None:
             return False
@@ -265,115 +280,115 @@ class spaclient:
                 crc ^= 0x07
         return crc ^ 0x02
 
-    def _read_msg_sync(self):
-        """Synchronous message read - runs in executor thread."""
-        if self.socket_s is None:
+    def _recv_sync(self):
+        """Blocking recv - runs in executor thread.
+
+        Returns the received bytes, or None if the connection failed/closed.
+        """
+        sock = self.socket_s
+        if sock is None:
             return None
-            
         try:
-            len_chunk = self.socket_s.recv(2)
+            data = sock.recv(RECV_SIZE)
         except (socket.timeout, socket.error, OSError) as e:
-            _LOGGER.debug("Socket recv(2) error: %s", e)
+            _LOGGER.debug("Socket recv error: %s", e)
             return None
-
-        if len_chunk == b'~' or len_chunk == b'' or len(len_chunk) == 0:
-            return b''
-
-        if len(len_chunk) < 2:
-            return b''
-            
-        length = len_chunk[1]
-
-        if int(length) == 0:
-            return b''
-
-        try:
-            chunk = self.socket_s.recv(length)
-        except (socket.timeout, socket.error, OSError) as e:
-            _LOGGER.debug("Socket recv(length) error: %s", e)
+        if not data:
+            # Peer closed the connection (module rebooted, OTA, ...)
+            _LOGGER.debug("Socket closed by peer")
             return None
+        return data
 
-        return chunk
-    
+    def _extract_frames(self):
+        """Split the reassembly buffer into Balboa frames.
+
+        Frame layout: 7E LEN CH DEST TYPE PAYLOAD... CRC 7E, where LEN counts
+        the bytes from LEN up to and including CRC (total frame = LEN + 2).
+        Each extracted chunk keeps the historical format used by the parsers:
+        everything after the LEN byte (CH DEST TYPE PAYLOAD... CRC 7E).
+        """
+        buf = self._rx_buffer
+        frames = []
+        pos = 0
+        while True:
+            start = buf.find(FRAME_MARKER, pos)
+            if start < 0:
+                pos = len(buf)
+                break
+            if len(buf) - start < 2:
+                pos = start
+                break
+            length = buf[start + 1]
+            if length == FRAME_MARKER:
+                # "7E 7E" = end of previous frame followed by start of next
+                pos = start + 1
+                continue
+            if length < MIN_FRAME_LEN:
+                pos = start + 1
+                continue
+            end = start + length + 1  # index of the closing 7E
+            if end >= len(buf):
+                pos = start  # incomplete frame, wait for more data
+                break
+            if buf[end] == FRAME_MARKER:
+                frames.append(bytes(buf[start + 2:end + 1]))
+                pos = end + 1
+                continue
+            # Tolerate the module identification reply of older SmartSpa
+            # firmwares that announced LEN one byte too short.
+            if (
+                end + 1 < len(buf)
+                and buf[end + 1] == FRAME_MARKER
+                and length >= 4
+                and buf[start + 4] == 0x94
+            ):
+                frames.append(bytes(buf[start + 2:end + 2]))
+                pos = end + 2
+                continue
+            # Not a valid frame - resynchronise on the next marker
+            pos = start + 1
+
+        del buf[:pos]
+        if len(buf) > MAX_RX_BUFFER:
+            buf.clear()
+        return frames
+
     async def read_msg_async(self):
-        """Async wrapper for message reading - doesn't block event loop."""
+        """Read from the socket and process every complete frame.
+
+        Returns False if the connection was lost, True otherwise.
+        """
         if self._loop is None:
-            self._loop = asyncio.get_event_loop()
-            
+            self._loop = asyncio.get_running_loop()
+
         if self.socket_s is None:
             return False
-            
-        self.socket_l.acquire()
-        try:
-            chunk = await self._loop.run_in_executor(self._executor, self._read_msg_sync)
-        except Exception as e:
-            _LOGGER.debug("Error in read_msg_async executor: %s", e)
-            chunk = None
-        finally:
-            self.socket_l.release()
-        
-        if chunk is None:
-            # Connection error occurred
-            self.socket_is_connected = False
-            await self._close_socket()
-            return False
-            
-        if chunk == b'':
-            # Empty message, just continue
-            return True
-            
-        return self._process_chunk(chunk)
-    
-    def read_msg(self):
-        """Legacy sync read_msg for backward compatibility - USE read_msg_async INSTEAD."""
-        if self.socket_s is None:
-            return False
-            
-        self.socket_l.acquire()
 
-        try:
-            len_chunk = self.socket_s.recv(2)
-        except (socket.timeout, socket.error, OSError) as e:
-            _LOGGER.debug("Socket recv(2) error: %s", e)
-            self.socket_is_connected = False
-            self.socket_l.release()
-            try:
-                self.socket_s.close()
-            except Exception:
-                pass
-            self.socket_s = None
-            return False
+        async with self.socket_l:
+            # Frames already buffered by a previous recv are processed first
+            if not self._rx_frames:
+                try:
+                    data = await self._loop.run_in_executor(self._executor, self._recv_sync)
+                except Exception as e:
+                    _LOGGER.debug("Error in read_msg_async executor: %s", e)
+                    data = None
 
-        if len_chunk == b'~' or len_chunk == b'' or len(len_chunk) == 0:
-            self.socket_l.release()
-            return True
+                if data is None:
+                    # Connection error occurred
+                    self.socket_is_connected = False
+                    await self._close_socket()
+                    return False
 
-        if len(len_chunk) < 2:
-            self.socket_l.release()
-            return True
-            
-        length = len_chunk[1]
+                self._rx_buffer.extend(data)
+                self._rx_frames.extend(self._extract_frames())
 
-        if int(length) == 0:
-            self.socket_l.release()
-            return True
+            frames = self._rx_frames
+            self._rx_frames = []
 
-        try:
-            chunk = self.socket_s.recv(length)
-        except (socket.timeout, socket.error, OSError) as e:
-            _LOGGER.debug("Socket recv(length) error: %s", e)
-            self.socket_is_connected = False
-            self.socket_l.release()
-            try:
-                self.socket_s.close()
-            except Exception:
-                pass
-            self.socket_s = None
-            return False
+        for chunk in frames:
+            self._process_chunk(chunk)
+        return True
 
-        self.socket_l.release()
-        return self._process_chunk(chunk)
-    
     def _process_chunk(self, chunk):
 
         """Process received chunk and parse response."""
@@ -381,14 +396,17 @@ class spaclient:
             return True
             
         if chunk != self.status_chunk_array:
-            if chunk[0:3] == b'\xff\xaf\x13' and ((self.information_loaded and self.additional_information_loaded and self.preferences_loaded and self.configuration_loaded and self.module_identification_loaded) or (self.socket_is_connected == False)):
+            # Status updates are always processed. (They used to be ignored
+            # until every information request had been answered, so a single
+            # unanswered request froze all entities after the first update.)
+            if chunk[0:3] == b'\xff\xaf\x13':
                 #_LOGGER.info("Status update = %s", chunk[3:]) #Validation point
                 try:
                     self.parse_status_update(chunk[3:])
                     self.status_chunk_array = chunk
                     self.socket_is_connected = True
                 except Exception as e:
-                    _LOGGER.warning("Error parsing status update: %s", e)
+                    _LOGGER.warning("Error parsing status update %s: %s", chunk.hex(), e)
                 return True
 
             if chunk[0:3] == b'\x0a\xbf\x23':
@@ -415,7 +433,8 @@ class spaclient:
                     _LOGGER.warning("Error parsing additional information: %s", e)
                 return True
 
-            if chunk[0:3] == b'\x0a\xbf\x26' and self.preferences_loaded != True:
+            if chunk[0:3] == b'\x0a\xbf\x26':
+                # Always parsed, so changes made on the panel are picked up
                 #_LOGGER.info("Preferences response = %s", chunk[3:]) #Validation point
                 try:
                     self.parse_preferences_response(chunk[3:])
@@ -470,7 +489,7 @@ class spaclient:
                 else:
                     # Socket is gone — try to reconnect quickly instead of
                     # waiting up to 30s for keep_alive_call to wake up.
-                    now = asyncio.get_event_loop().time()
+                    now = asyncio.get_running_loop().time()
                     if _next_reconnect_at is None:
                         _next_reconnect_at = now + RECONNECT_DELAY
                         _LOGGER.warning("Socket lost, will attempt reconnect in %ds", RECONNECT_DELAY)
@@ -481,7 +500,7 @@ class spaclient:
                             _next_reconnect_at = None
                         else:
                             # Back-off: try again after another RECONNECT_DELAY
-                            _next_reconnect_at = asyncio.get_event_loop().time() + RECONNECT_DELAY
+                            _next_reconnect_at = asyncio.get_running_loop().time() + RECONNECT_DELAY
                     await asyncio.sleep(1)
             except asyncio.CancelledError:
                 _LOGGER.debug("Message reading task cancelled")
@@ -816,28 +835,32 @@ class spaclient:
         self.current_temp = byte_array[2] if (byte_array[2] != 255) else None
         self.hour = byte_array[3]
         self.minute = byte_array[4]
-        self.heat_mode = ("Ready", "Rest", "Ready in Rest")[byte_array[5]]
+        # Only the low 2 bits hold the heat mode (other bits must not cause IndexError)
+        self.heat_mode = ("Ready", "Rest", "Ready in Rest", "Ready in Rest")[byte_array[5] & 0x03]
         self.hold_mode_remain_time = byte_array[7] if self.hold_mode else 0
         self.temp_scale = "Fahrenheit" if (byte_array[9] & 0x01 == 0) else "Celsius"
         self.time_scale = "12 Hr" if (byte_array[9] & 0x02 == 0) else "24 Hr"
         self.filter_mode = (byte_array[9] & 0x0c) >> 2
         self.flip_screen = 1 if (byte_array[9] & 0x80) >> 7 == 1 else 0
         self.notification = 1 if (byte_array[19] & 0x20) >> 5 == 1 else 0
-        self.heating = (byte_array[10] & 0x30) >> 4 == 1
+        # 0 = Off, 1 = Heating, 2 = Heat Waiting
+        self.heating = (byte_array[10] & 0x30) >> 4
         self.temp_range = "Low" if (byte_array[10] & 0x04) >> 2 == 0 else "High"
-        self.pump1 = ("Off", "Low", "High")[byte_array[11] & 0x03]
-        self.pump2 = ("Off", "Low", "High")[byte_array[11] >> 2 & 0x03]
-        self.pump3 = ("Off", "Low", "High")[byte_array[11] >> 4 & 0x03]
-        self.pump4 = ("Off", "Low", "High")[byte_array[11] >> 6 & 0x03]
-        self.pump5 = ("Off", "Low", "High")[byte_array[12] & 0x03]
-        self.pump6 = ("Off", "Low", "High")[byte_array[12] >> 6 & 0x03]
-        self.circ_pump = byte_array[13] & 0x02
+        pump_states = ("Off", "Low", "High", "High")
+        self.pump1 = pump_states[byte_array[11] & 0x03]
+        self.pump2 = pump_states[byte_array[11] >> 2 & 0x03]
+        self.pump3 = pump_states[byte_array[11] >> 4 & 0x03]
+        self.pump4 = pump_states[byte_array[11] >> 6 & 0x03]
+        self.pump5 = pump_states[byte_array[12] & 0x03]
+        self.pump6 = pump_states[byte_array[12] >> 6 & 0x03]
+        self.circ_pump = (byte_array[13] & 0x02) != 0
         self.blower =  "Off" if (byte_array[13] & 0x0c) >> 2 == 0 else "On"
         self.light1 = byte_array[14] & 0x03 == 0x03
         self.light2 = byte_array[14] >> 6 & 0x03 == 0x03
         self.mister = "Off" if (byte_array[15] & 0x01) == 0 else "On"
-        self.aux1 = byte_array[15] & 0x08
-        self.aux2 = byte_array[15] & 0x10
+        # Same "On"/"Off" representation that set_aux() and the switch entity use
+        self.aux1 = "On" if (byte_array[15] & 0x08) else "Off"
+        self.aux2 = "On" if (byte_array[15] & 0x10) else "Off"
         self.set_temp = byte_array[20]
         self.standby_mode = 1 if (byte_array[22] & 0x01) == 1 else 0
 
@@ -1230,7 +1253,7 @@ class spaclient:
     async def _send_message_async(self, type, payload):
         """Send a message to the spa (async - preferred method)."""
         if self._loop is None:
-            self._loop = asyncio.get_event_loop()
+            self._loop = asyncio.get_running_loop()
             
         if self.socket_s is None:
             _LOGGER.warning("Cannot send message, socket is None")
@@ -1248,9 +1271,9 @@ class spaclient:
     
     async def _wait_for_response(self, flag_name, timeout):
         """Wait for a response flag with timeout protection."""
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
         while not getattr(self, flag_name) and not self._stop_flag:
-            elapsed = asyncio.get_event_loop().time() - start_time
+            elapsed = asyncio.get_running_loop().time() - start_time
             if elapsed > timeout:
                 _LOGGER.warning("Timeout waiting for %s after %.1f seconds", flag_name, elapsed)
                 return False
@@ -1394,7 +1417,19 @@ class spaclient:
             pump_code = 0x09
         if pump_val == value:
             return
-        self.send_toggle_message(pump_code)
+        # Each toggle advances the pump one step:
+        #   2-speed pump: Off -> Low -> High -> Off
+        #   1-speed pump: Off -> High -> Off
+        if self.cfg_pump_array[pump_num - 1] == 2:
+            cycle = ["Off", "Low", "High"]
+        else:
+            cycle = ["Off", "High"]
+        if pump_val not in cycle or value not in cycle:
+            toggles = 1
+        else:
+            toggles = (cycle.index(value) - cycle.index(pump_val)) % len(cycle)
+        for _ in range(toggles):
+            self.send_toggle_message(pump_code)
         if pump_num == 1:
             self.pump1 = value
         if pump_num == 2:

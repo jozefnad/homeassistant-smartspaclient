@@ -51,7 +51,7 @@ class SpaClientConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input:
             try:
                 await validate_input(self.hass, user_input)
-                return self.async_create_entry(title="", data=user_input)
+                return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
             except AlreadyConfigured:
                 return self.async_abort(reason="already_configured")
             except CannotConnect:
@@ -95,7 +95,12 @@ async def validate_input(hass, data):
 
     spa = spaclient(data[CONF_HOST])
 
-    connected = await spa.validate_connection()                          #To switch to development mode, comment out this line
+    try:
+        connected = await spa.validate_connection()                      #To switch to development mode, comment out this line
+    finally:
+        # Close the validation connection - the module accepts only a few
+        # TCP clients and the real connection is opened in async_setup_entry
+        await spa.stop()
 
     if not connected:                                                    #To switch to development mode, comment out this line
         raise CannotConnect                                              #To switch to development mode, comment out this line
